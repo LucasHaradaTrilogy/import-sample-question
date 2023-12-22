@@ -19,7 +19,6 @@ function main() {
 
   let errors = 0;
   let i = 0;
-  let limit = 999999;
   for (const { skill, question, standardIdParams } of skillQuestionPairs(
     parsed
   )) {
@@ -41,35 +40,27 @@ function main() {
       });
 
       i++;
-      if (i > limit) {
-        break;
-      }
     } catch (e) {
       errors++;
       console.error("Failed to parse question", question);
     }
+    console.log("row ", i);
     console.info("--------");
   }
   console.error("total errors", errors);
 
-  fs.writeFileSync(
-    "up.sql",
-    [
-      startTransaction(),
-      insertGeneratedContent(generatedContentRows),
-      insertGeneratedContentAttributes(generatedContentAttributeRows),
-      commitTransaction(),
-    ].join(";\n")
-  );
+  fs.writeFileSync("up0.sql", insertGeneratedContent(generatedContentRows));
 
   fs.writeFileSync(
-    "down.sql",
-    [
-      startTransaction(),
-      deleteGeneratedContentAttributes(generatedContentAttributeRows),
-      deleteGeneratedContent(generatedContentRows),
-      commitTransaction(),
-    ].join(";\n")
+    "up1.sql",
+    insertGeneratedContentAttributes(generatedContentAttributeRows)
+  );
+
+  fs.writeFileSync("down0.sql", deleteGeneratedContent(generatedContentRows));
+
+  fs.writeFileSync(
+    "down1.sql",
+    deleteGeneratedContentAttributes(generatedContentAttributeRows)
   );
 }
 
@@ -78,20 +69,28 @@ function* skillQuestionPairs(rows: Record<string, string>[]) {
   for (const row of rows) {
     for (const i of [1, 2, 3, 4, 5, 6]) {
       for (const j of [1, 2, 3]) {
+        const standardExternalIdL3 = row["Standard Id (L3)"];
+        const standardExternalIdL2 = row["Standard Id (L2)"];
+        const standardExternalIdL1 = row["Standard Id (L1)"];
+
+        const standardExternalId =
+          standardExternalIdL3 !== ""
+            ? standardExternalIdL3
+            : standardExternalIdL2 !== ""
+            ? standardExternalIdL2
+            : standardExternalIdL1;
         const data = {
           skill: row[`Skill ${i}`],
           question: row[`Skill ${i} Question ${j}`],
           standardIdParams: {
-            standardExternalIdL3: row["Standard Id (L3)"],
-            standardExternalIdL2: row["Standard Id (L2)"],
-            standardExternalIdL1: row["Standard Id (L1)"],
+            standardExternalId,
             clusterExternalId: row["Cluster Id"],
             domainExternalId: row["Domain Id"],
             courseName: row["Course"],
             subjectName: row["Subject"],
           },
         };
-        const seenKey = `${data.skill}||||${data.question}`;
+        const seenKey = `${standardExternalId}||||${data.skill}||||${data.question}`;
         if (data.skill && data.question && !seen.has(seenKey)) {
           seen.add(seenKey);
           yield data;
@@ -110,9 +109,7 @@ function commitTransaction() {
 }
 
 type StandardIdQueryParams = {
-  standardExternalIdL3: string;
-  standardExternalIdL2: string;
-  standardExternalIdL1: string;
+  standardExternalId: string;
   clusterExternalId: string;
   domainExternalId: string;
   courseName: string;
@@ -120,20 +117,12 @@ type StandardIdQueryParams = {
 };
 
 function standardIdQuery({
-  standardExternalIdL3,
-  standardExternalIdL2,
-  standardExternalIdL1,
+  standardExternalId,
   clusterExternalId,
   domainExternalId,
   courseName,
   subjectName,
 }: StandardIdQueryParams) {
-  const standardExternalId =
-    standardExternalIdL3 !== ""
-      ? standardExternalIdL3
-      : standardExternalIdL2 !== ""
-      ? standardExternalIdL2
-      : standardExternalIdL1;
   const query = `
 SELECT
 	s.id
@@ -164,7 +153,13 @@ WHERE
   return mysql.raw(`(${formattedQuery})`);
 }
 
+const cache = new Map<string, Question>();
+
 function parseQuestion(input: string): Question {
+  if (cache.get(input)) {
+    return cache.get(input)!;
+  }
+
   const stdout = execSync("python parser/main.py", { input }).toString();
   let res: any;
   try {
@@ -197,16 +192,12 @@ function parseQuestion(input: string): Question {
     }
   }
 
-  // if (question.answer_options.every((o) => o.correct != null)) {
-  //   console.log(input);
-  //   console.log(question);
-  // }
-
   const res2 = Question.safeParse(question);
   if (!res2.success) {
     console.error(question);
     throw new Error("Failed to parse question");
   }
+  cache.set(input, res2.data);
   return res2.data;
 }
 
@@ -216,73 +207,16 @@ function contentGeneratorConfigIdQuery() {
   );
 }
 
-// function parseQuestionWithSections(input: string): Question {
-//   const sections = input.split("\n\n");
-//   const [questionSection, ...optionSections] = sections;
-//
-//   const questionLines = questionSection.split("\n");
-//   if (questionLines[0] !== "Question:") {
-//     throw new Error("Expected Question: section");
-//   }
-//   if (questionLines.length != 2) {
-//     console.error(questionLines);
-//     throw new Error("Question contains newline");
-//   }
-//   const question = questionLines[1].trim();
-//
-//   const options: QuestionOption[] = [];
-//   for (const [i, option] of ["A", "B", "C", "D"].entries()) {
-//     const optionLines = sections[i + 1].split("\n");
-//     if (optionLines[0] !== `Option ${option}:`) {
-//       throw new Error(`Expected ${option}: section`);
-//     }
-//     if (optionLines.length != 4) {
-//       console.error(optionLines);
-//       throw new Error("Option contains newline");
-//     }
-//
-//     if (!optionLines[1].startsWith("Answer:")) {
-//       throw new Error(`Expected Answer: section`);
-//     }
-//     const answer = optionLines[1].replace("Answer:", "").trim();
-//
-//     if (!optionLines[2].startsWith("Explanation:")) {
-//       throw new Error(`Expected Explanation: section`);
-//     }
-//     const explanation = optionLines[2].replace("Explanation:", "").trim();
-//
-//     if (!optionLines[3].startsWith("Correct:")) {
-//       throw new Error(`Expected Correct: section`);
-//     }
-//     const correct = optionLines[3].replace("Correct:", "").trim();
-//     if (correct !== "True" && correct !== "False") {
-//       throw new Error(`Expected True or False for correct`);
-//     }
-//
-//     options.push({
-//       id: option,
-//       answer,
-//       explanation,
-//       correct: correct === "True",
-//     });
-//   }
-//
-//   return Question.parse({
-//     question,
-//     answer_options: options,
-//   });
-// }
-
 const QuestionOption = z.object({
-  id: z.string().min(1),
-  answer: z.string().min(1),
+  id: z.string().trim().min(1),
+  answer: z.string().trim().min(1),
   correct: z.boolean().optional(),
-  explanation: z.string().default(""),
+  explanation: z.string().trim().default(""),
 });
 type QuestionOption = z.infer<typeof QuestionOption>;
 
 const Question = z.object({
-  question: z.string().min(1),
+  question: z.string().trim().min(1),
   answer_options: z.array(QuestionOption).length(4),
 });
 type Question = z.infer<typeof Question>;
@@ -298,7 +232,7 @@ type GeneratedContentRow = {
 
 function insertGeneratedContent(rows: GeneratedContentRow[]) {
   return mysql.format(
-    "INSERT INTO content_gen_generated_content (id, content, content_generator_config_id, standard_id, status) VALUES ?",
+    "INSERT IGNORE INTO content_gen_generated_content (id, content, content_generator_config_id, standard_id, status) VALUES ?",
     [
       rows.map((row) => [
         row.id,
@@ -322,7 +256,7 @@ function insertGeneratedContentAttributes(
   rows: GeneratedContentAttributeRow[]
 ) {
   return mysql.format(
-    "INSERT INTO content_gen_generated_content_attributes (id, attribute_name, attribute_value, attribute_hash, generated_content_id) VALUES ?",
+    "INSERT IGNORE INTO content_gen_generated_content_attributes (id, attribute_name, attribute_value, attribute_hash, generated_content_id) VALUES ?",
     [
       rows.map((row) => [
         row.id,
