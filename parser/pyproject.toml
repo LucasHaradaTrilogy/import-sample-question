@@ -1,0 +1,15 @@
+[tool.poetry]
+name = "parser"
+version = "0.1.0"
+description = ""
+authors = ["Lucas Harada <lucas.harada@trilogy.com>"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.12"
+pyparsing = "^3.1.1"
+
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
