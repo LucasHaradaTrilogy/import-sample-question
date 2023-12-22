@@ -18,17 +18,18 @@ function main() {
   const generatedContentAttributeRows: GeneratedContentAttributeRow[] = [];
 
   let errors = 0;
+  let i = 0;
+  let limit = 999999;
   for (const { skill, question, standardIdParams } of skillQuestionPairs(
     parsed
   )) {
     try {
-      const q = parseQuestion(question);
       const contentId = uuid.v4();
       generatedContentRows.push({
         id: contentId,
         requestedContext: {},
-        content: q,
-        content_generator_config_id: '',
+        content: parseQuestion(question),
+        contentGeneratorConfigIdQuery: contentGeneratorConfigIdQuery(),
         standardIdQuery: standardIdQuery(standardIdParams),
         status: "training",
       });
@@ -38,6 +39,11 @@ function main() {
         attributeValue: skill,
         generatedContentId: contentId,
       });
+
+      i++;
+      if (i > limit) {
+        break;
+      }
     } catch (e) {
       errors++;
       console.error("Failed to parse question", question);
@@ -47,11 +53,21 @@ function main() {
   console.error("total errors", errors);
 
   fs.writeFileSync(
-    "out.sql",
+    "up.sql",
     [
       startTransaction(),
       insertGeneratedContent(generatedContentRows),
       insertGeneratedContentAttributes(generatedContentAttributeRows),
+      commitTransaction(),
+    ].join(";\n")
+  );
+
+  fs.writeFileSync(
+    "down.sql",
+    [
+      startTransaction(),
+      deleteGeneratedContentAttributes(generatedContentAttributeRows),
+      deleteGeneratedContent(generatedContentRows),
       commitTransaction(),
     ].join(";\n")
   );
@@ -145,7 +161,7 @@ WHERE
     courseName,
     subjectName,
   ]);
-  return mysql.raw(`(${formattedQuery}))`);
+  return mysql.raw(`(${formattedQuery})`);
 }
 
 function parseQuestion(input: string): Question {
@@ -164,13 +180,27 @@ function parseQuestion(input: string): Question {
     answer_options: ["A", "B", "C", "D"].map((id) => ({
       id,
       answer: res[`option_${id}_answer`],
-      correct: res[`option_${id}_correct`]?.trim() === "True",
+      correct: res[`option_${id}_correct`]
+        ? res[`option_${id}_correct`]?.trim() === "True"
+        : undefined,
       explanation: res[`option_${id}_explanation`],
     })),
   };
-  if (question.answer_options.every((o) => o.correct === false)) {
-    question.answer_options[0].correct = true;
+  for (const option of question.answer_options) {
+    if (option.explanation === "Correct: False") {
+      option.correct = false;
+      option.explanation = "";
+    }
+    if (option.explanation === "Correct: True") {
+      option.correct = true;
+      option.explanation = "";
+    }
   }
+
+  // if (question.answer_options.every((o) => o.correct != null)) {
+  //   console.log(input);
+  //   console.log(question);
+  // }
 
   const res2 = Question.safeParse(question);
   if (!res2.success) {
@@ -178,6 +208,12 @@ function parseQuestion(input: string): Question {
     throw new Error("Failed to parse question");
   }
   return res2.data;
+}
+
+function contentGeneratorConfigIdQuery() {
+  return mysql.raw(
+    `(SELECT id FROM content_gen_content_generator_configs WHERE external_id = 'MCQ Example Content')`
+  );
 }
 
 // function parseQuestionWithSections(input: string): Question {
@@ -240,7 +276,7 @@ function parseQuestion(input: string): Question {
 const QuestionOption = z.object({
   id: z.string().min(1),
   answer: z.string().min(1),
-  correct: z.boolean(),
+  correct: z.boolean().optional(),
   explanation: z.string().default(""),
 });
 type QuestionOption = z.infer<typeof QuestionOption>;
@@ -255,19 +291,19 @@ type GeneratedContentRow = {
   id: string;
   requestedContext: {}; // Always set this to an empty json object
   content: Question;
-  content_generator_config_id: ""; // TBD when the other PR is merged
+  contentGeneratorConfigIdQuery: ReturnType<typeof mysql.raw>; // TBD when the other PR is merged
   standardIdQuery: ReturnType<typeof mysql.raw>;
   status: "training";
 };
 
 function insertGeneratedContent(rows: GeneratedContentRow[]) {
   return mysql.format(
-    "INSERT INTO `content_gen_generated_content` (`id`, `content`, `content_generator_config_id`, `standard_id`, `status`) VALUES ?",
+    "INSERT INTO content_gen_generated_content (id, content, content_generator_config_id, standard_id, status) VALUES ?",
     [
       rows.map((row) => [
         row.id,
         JSON.stringify(row.content),
-        row.content_generator_config_id,
+        row.contentGeneratorConfigIdQuery,
         row.standardIdQuery,
         row.status,
       ]),
@@ -296,6 +332,22 @@ function insertGeneratedContentAttributes(
         row.generatedContentId,
       ]),
     ]
+  );
+}
+
+function deleteGeneratedContent(rows: GeneratedContentRow[]) {
+  return mysql.format(
+    "DELETE FROM `content_gen_generated_content` WHERE id IN (?)",
+    [rows.map((row) => row.id)]
+  );
+}
+
+function deleteGeneratedContentAttributes(
+  rows: GeneratedContentAttributeRow[]
+) {
+  return mysql.format(
+    "DELETE FROM `content_gen_generated_content_attributes` WHERE id IN (?)",
+    [rows.map((row) => row.id)]
   );
 }
 

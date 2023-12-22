@@ -1,3 +1,4 @@
+import unicodedata
 import pyparsing as pp
 import sys
 import re
@@ -54,7 +55,6 @@ def structured_question():
                 + "."
             )
             + pp.SkipTo(pp.LineEnd())
-            .set_parse_action(parse_explanation)
             .set_results_name(f"option_{letter}_explanation")
             + pp.LineEnd()
         )
@@ -157,5 +157,8 @@ if __name__ == "__main__":
     parser = pp.MatchFirst([structured_question(), loose_question()])
 
     res = parser.parse_string(sys.stdin.read())
-    print(json.dumps(res.as_dict()))
+    d = res.as_dict()
+    # for key, value in res.as_dict().items():
+    #     d[key] = unicodedata.normalize("NFKD", value)
+    print(json.dumps(d))
     # pprint(res.as_dict())
